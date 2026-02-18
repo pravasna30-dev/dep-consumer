@@ -1,108 +1,159 @@
-name: Consumer CI - Breaking Change Detection
+name: Cross-Build Composite - Gradle Consumer ← Bazel Producer
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      library_version:
-        description: 'Library version to test against'
-        required: true
-        default: '1.0.0'
-        type: choice
-        options:
-          - '1.0.0'
-          - '2.0.0'
 
 jobs:
-  test-with-library-v1:
-    name: "Test with Library v1.0.0 (Happy Path)"
+  happy-path:
+    name: "Happy Path - Consumer Tests Pass"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout consumer
+      - name: Checkout dep-consumer
         uses: actions/checkout@v4
 
-      - name: Checkout library (main branch - v1.0.0)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dep-library
-          ref: main
-          path: library-repo
+      - name: Clone bazel-monorepo (producer)
+        run: git clone --depth 1 https://github.com/pravasna30-dev/bazel-monorepo.git ../bazel-monorepo
 
-      - name: Set up JDK 21
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          java-version: "21"
+          distribution: "temurin"
           cache: gradle
 
-      - name: Publish library v1.0.0 to Maven Local
-        working-directory: library-repo
-        run: |
-          chmod +x gradlew
-          ./gradlew publishToMavenLocal -Pversion=1.0.0
+      - name: Build producer JAR via Bazel
+        working-directory: ../bazel-monorepo
+        run: bazel build //low-level-1
 
-      - name: Run consumer tests against v1.0.0
+      - name: Publish producer JAR to Maven Local
+        working-directory: ../bazel-monorepo
+        run: |
+          GROUP_ID="com.acme"
+          ARTIFACT_ID="low-level-1"
+          VERSION="1.0.0"
+          M2_DIR="$HOME/.m2/repository/com/acme/low-level-1/$VERSION"
+
+          JAR_PATH="$(find bazel-bin/low-level-1 -name 'liblow-level-1.jar' -type f | head -1)"
+          echo "Found JAR: $JAR_PATH"
+
+          mkdir -p "$M2_DIR"
+          rm -f "$M2_DIR/$ARTIFACT_ID-$VERSION.jar"
+          cp "$JAR_PATH" "$M2_DIR/$ARTIFACT_ID-$VERSION.jar"
+          chmod 644 "$M2_DIR/$ARTIFACT_ID-$VERSION.jar"
+
+          cat > "$M2_DIR/$ARTIFACT_ID-$VERSION.pom" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>${GROUP_ID}</groupId>
+            <artifactId>${ARTIFACT_ID}</artifactId>
+            <version>${VERSION}</version>
+            <packaging>jar</packaging>
+          </project>
+          EOF
+
+          echo "Published $GROUP_ID:$ARTIFACT_ID:$VERSION to Maven Local"
+
+      - name: Run consumer tests
         run: |
           chmod +x gradlew
-          ./gradlew test -PlibraryVersion=1.0.0
+          ./gradlew test
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-v1
+          name: test-results-happy-path
           path: build/reports/tests/
 
-  test-with-library-v2:
-    name: "Test with Library v2.0.0 (Breaking Change Detection)"
+  breaking-change:
+    name: "Breaking Change - Detected at Compile Time"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout consumer
+      - name: Checkout dep-consumer
         uses: actions/checkout@v4
 
-      - name: Checkout library (feature branch - v2.0.0)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dep-library
-          ref: feature/method-signature-change
-          path: library-repo
+      - name: Clone bazel-monorepo (producer)
+        run: git clone --depth 1 https://github.com/pravasna30-dev/bazel-monorepo.git ../bazel-monorepo
 
-      - name: Set up JDK 21
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          java-version: "21"
+          distribution: "temurin"
           cache: gradle
 
-      - name: Publish library v2.0.0 to Maven Local
-        working-directory: library-repo
+      - name: Build and publish producer JAR (baseline)
+        working-directory: ../bazel-monorepo
+        run: |
+          bazel build //low-level-1
+          M2_DIR="$HOME/.m2/repository/com/acme/low-level-1/1.0.0"
+          JAR_PATH="$(find bazel-bin/low-level-1 -name 'liblow-level-1.jar' -type f | head -1)"
+          mkdir -p "$M2_DIR"
+          rm -f "$M2_DIR/low-level-1-1.0.0.jar"
+          cp "$JAR_PATH" "$M2_DIR/low-level-1-1.0.0.jar"
+          chmod 644 "$M2_DIR/low-level-1-1.0.0.jar"
+          cat > "$M2_DIR/low-level-1-1.0.0.pom" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.acme</groupId>
+            <artifactId>low-level-1</artifactId>
+            <version>1.0.0</version>
+            <packaging>jar</packaging>
+          </project>
+          EOF
+
+      - name: Verify happy path first
         run: |
           chmod +x gradlew
-          ./gradlew publishToMavenLocal -Pversion=2.0.0
+          ./gradlew test
 
-      - name: Run consumer tests against v2.0.0 (expected to FAIL)
-        id: test-v2
+      - name: Introduce breaking change in producer
+        working-directory: ../bazel-monorepo
         run: |
-          chmod +x gradlew
-          ./gradlew test -PlibraryVersion=2.0.0
-        continue-on-error: true
+          echo "=== Before change ==="
+          grep "say" low-level-1/src/main/java/com/acme/arc/dep/test/LowOneMain.java
+          echo ""
+          echo "=== Applying breaking change: say() → speak() ==="
+          sed -i 's/public static void say()/public static void speak()/' \
+            low-level-1/src/main/java/com/acme/arc/dep/test/LowOneMain.java
+          sed -i 's/say();/speak();/' \
+            low-level-1/src/main/java/com/acme/arc/dep/test/LowOneMain.java
+          echo ""
+          echo "=== After change ==="
+          cat low-level-1/src/main/java/com/acme/arc/dep/test/LowOneMain.java
 
-      - name: Verify breaking change was detected
+      - name: Rebuild and republish broken producer JAR
+        working-directory: ../bazel-monorepo
         run: |
-          if [ "${{ steps.test-v2.outcome }}" == "failure" ]; then
-            echo "✅ SUCCESS: Breaking change in library v2.0.0 was correctly detected!"
-            echo ""
-            echo "The consumer tests failed because the library API changed:"
-            echo "- findById(Long) → findById(String)"
-            echo "- User findById() → Optional<User> findById()"
-            echo "- Long getId() → String getId()"
-            exit 0
-          else
-            echo "❌ UNEXPECTED: Consumer tests should have failed against library v2.0.0"
+          bazel build //low-level-1
+          M2_DIR="$HOME/.m2/repository/com/acme/low-level-1/1.0.0"
+          JAR_PATH="$(find bazel-bin/low-level-1 -name 'liblow-level-1.jar' -type f | head -1)"
+          rm -f "$M2_DIR/low-level-1-1.0.0.jar"
+          cp "$JAR_PATH" "$M2_DIR/low-level-1-1.0.0.jar"
+          chmod 644 "$M2_DIR/low-level-1-1.0.0.jar"
+          echo "Republished broken JAR to Maven Local"
+
+      - name: Run consumer tests (expect compile failure)
+        run: |
+          echo "=== Running consumer tests against broken producer ==="
+          ./gradlew clean test 2>&1 || true
+          if ./gradlew clean test 2>&1; then
+            echo "ERROR: Tests should have failed but passed!"
             exit 1
+          else
+            echo ""
+            echo "=== SUCCESS: Breaking change detected at compile time ==="
+            echo "The Gradle consumer correctly caught the incompatible API change in the Bazel producer."
           fi

@@ -15,12 +15,9 @@ repositories {
     mavenCentral()
 }
 
-// Library version - change this to test different versions
-val libraryVersion: String = project.findProperty("libraryVersion")?.toString() ?: "1.0.0"
-
 dependencies {
-    // External dependency on the library (published to mavenLocal)
-    implementation("com.example:library:$libraryVersion")
+    // Cross-build-system dependency: Bazel-built JAR published to mavenLocal
+    implementation("com.acme:low-level-1:1.0.0")
 
     // Testing
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
